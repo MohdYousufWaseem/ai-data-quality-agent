@@ -6,3 +6,4 @@ groq>=0.11.0
 duckdb>=1.0.0
 python-dotenv>=1.0.0
 pytest>=7.4.0
+streamlit>=1.38.0

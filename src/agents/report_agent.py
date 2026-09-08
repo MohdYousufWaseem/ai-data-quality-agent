@@ -1,15 +1,15 @@
 """
 Report Agent.
 
-This is the ONE place in Phase 1 that calls an LLM. Its only job is to
-turn the structured QualityReport into a short, human-readable
-recommendation — it does NOT get to invent issues or numbers. We pass
-it the already-computed structured data and constrain it to summarizing
-and recommending, which keeps it from hallucinating findings.
+This is the ONE place in the pipeline that calls an LLM. Its only job is
+to turn the already-computed QualityReport + DriftReport into a short,
+human-readable recommendation -- it does NOT get to invent issues or
+numbers.
 
-Uses Groq's free API (OpenAI-compatible client) running an open-weight
-model. Swap the model name below for any other Groq-hosted model if
-you like: https://console.groq.com/docs/models
+The Groq client is created lazily (on first use, not at import time).
+This matters for the Streamlit UI: if GROQ_API_KEY is missing, we want
+to show a friendly in-app message and still display the rest of the
+report, rather than crashing the whole app before it even loads.
 """
 
 import os
@@ -17,9 +17,23 @@ import json
 from groq import Groq
 from src.state import GraphState
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+MODEL = "openai/gpt-oss-120b"
 
-MODEL = "llama-3.3-70b-versatile"
+_client: Groq | None = None
+
+
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Get a free key at "
+                "https://console.groq.com/keys and add it to your .env file."
+            )
+        _client = Groq(api_key=api_key)
+    return _client
+
 
 SYSTEM_PROMPT = """You are a data quality analyst writing a short executive \
 summary of a data quality report. You will be given a JSON object with the \
@@ -44,18 +58,34 @@ def report_agent(state: GraphState) -> GraphState:
         "drift_report": drift_report.model_dump() if drift_report else None,
     }
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=300,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Report JSON:\n{json.dumps(payload, indent=2)}"},
-        ],
-    )
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=MODEL,
+            max_tokens=1024,
+            reasoning_effort="low",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Report JSON:\n{json.dumps(payload, indent=2)}"},
+            ],
+        )
+        summary_text = (response.choices[0].message.content or "").strip()
 
-    summary_text = response.choices[0].message.content
+        if not summary_text:
+            raise RuntimeError(
+                "Model returned empty content (likely spent its full token "
+                "budget on internal reasoning). Try raising max_tokens further."
+            )
 
-    report.generated_summary = summary_text.strip()
+        report.generated_summary = summary_text
+        state["log"].append(f"[ReportAgent] Generated narrative summary via Groq ({MODEL}).")
+
+    except Exception as e:
+        report.generated_summary = (
+            f"(Summary unavailable: {e}. The structured report above is still "
+            f"fully computed -- this only affects the narrative write-up.)"
+        )
+        state["log"].append(f"[ReportAgent] Skipped LLM summary due to error: {e}")
+
     state["quality_report"] = report
-    state["log"].append(f"[ReportAgent] Generated narrative summary via Groq ({MODEL}).")
     return state

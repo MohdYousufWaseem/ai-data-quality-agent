@@ -111,7 +111,7 @@ git clone <your-repo-url>
 cd ai-data-quality-agent
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then add your GROQ_API_KEY (free: console.groq.com/keys)
+cp .env .env   # then add your GROQ_API_KEY (free: console.groq.com/keys)
 ```
 
 ## Run it
