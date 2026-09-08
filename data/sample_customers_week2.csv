@@ -1,0 +1,11 @@
+customer_id,first_name,last_name,email,phone,age,signup_date,loyalty_tier
+1,Ravi,Sharma,ravi.sharma@gmail.com,9876543210,29,2023-01-15,Gold
+2,Priya,Verma,priya.verma@yahoo.com,,34,2023-02-20,Silver
+3,Amit,Kumar,amit.kumar@hotmail.com,,41,2023-03-05,Bronze
+4,Sneha,Gupta,sneha.gupta@gmail.com,,27,2023-03-19,Silver
+6,Vikram,Singh,vikram.singh@gmail.com,,38,2023-04-02,Gold
+7,Anita,Desai,anita.desai@gmail.com,,31,2023-04-18,Bronze
+8,Rohan,Mehta,rohan.mehta@outlook.com,9871122334,45,2023-05-01,Silver
+9,Kavita,Joshi,kavita.joshi@gmail.com,9012345678,34,2023-05-14,Gold
+11,Suresh,Nair,suresh.nair@gmail.com,,52,2023-06-02,Bronze
+12,Deepa,Rao,deepa.rao@gmail.com,9345678912,33,2023-06-15,Silver
