@@ -69,3 +69,26 @@ class DriftReport(BaseModel):
     baseline_date: Optional[str] = None
     current_date: str
     findings: list[DriftFinding]
+
+
+# ---------------------------------------------------------------------------
+# 4. Output of the Root Cause Agent (explains WHY a volume anomaly happened)
+# ---------------------------------------------------------------------------
+
+class RootCauseCandidate(BaseModel):
+    column: str
+    category: str
+    baseline_count: int
+    current_count: int
+    delta: int              # positive = this category's rows decreased
+    contribution_pct: float # % of the total row-count change this category explains
+
+
+class RootCauseReport(BaseModel):
+    triggered: bool                              # did an investigation actually run?
+    anomaly_type: Optional[str] = None            # "volume_drop" or "volume_spike"
+    total_row_change: Optional[int] = None
+    primary_suspect: Optional[RootCauseCandidate] = None
+    other_candidates: list[RootCauseCandidate] = Field(default_factory=list)
+    conclusion: str = ""                          # deterministic, plain-English fact
+    reason_not_triggered: Optional[str] = None

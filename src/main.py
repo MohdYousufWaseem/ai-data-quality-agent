@@ -5,13 +5,6 @@ Usage:
     python -m src.main data/sample_customers.csv
     python -m src.main data/sample_customers.csv --as-of 2026-08-05
     python -m src.main data/sample_customers_week2.csv --as-of 2026-08-12 --source-name sample_customers.csv
-
---as-of lets you simulate "today" for demo purposes, so you can build up
-a fake history without waiting for real days to pass.
-
---source-name lets two different files be treated as the same logical
-source over time (e.g. a daily export that gets a new filename each day)
-so the DriftAgent knows to compare them against each other.
 """
 
 import argparse
@@ -20,7 +13,7 @@ import pandas as pd
 from datetime import date
 from dotenv import load_dotenv
 
-load_dotenv()  # reads .env and sets GROQ_API_KEY as an env var
+load_dotenv()
 
 from src.graph import build_graph
 from src.state import GraphState
@@ -71,6 +64,31 @@ def print_drift_section(drift_report):
             print(f"  {icon} {finding.description}")
 
 
+def print_root_cause_section(root_cause_report):
+    if not root_cause_report.triggered:
+        return  # nothing to show -- no baseline or no volume anomaly to investigate
+
+    print("\n" + "=" * 60)
+    print("ROOT CAUSE INVESTIGATION")
+    print("=" * 60)
+    print(f"Anomaly type: {root_cause_report.anomaly_type}")
+    print(f"Total row-count change: {root_cause_report.total_row_change}\n")
+
+    if root_cause_report.primary_suspect:
+        s = root_cause_report.primary_suspect
+        print(f"\U0001F3AF PRIMARY SUSPECT: '{s.category}' in column '{s.column}'")
+        print(f"   {s.baseline_count} rows -> {s.current_count} rows "
+              f"({s.contribution_pct:.0f}% of the total change)")
+
+    print(f"\nConclusion: {root_cause_report.conclusion}")
+
+    if root_cause_report.other_candidates:
+        print("\nOther contributing segments:")
+        for c in root_cause_report.other_candidates:
+            print(f"  - '{c.category}' in '{c.column}': {c.baseline_count} -> "
+                  f"{c.current_count} ({c.contribution_pct:.0f}%)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AI Data Quality & Analytics Agent")
     parser.add_argument("csv_path", help="Path to the CSV file to analyze")
@@ -96,8 +114,10 @@ def main():
         "as_of_date": as_of_date,
         "dataframe": df,
         "data_profile": None,
+        "baseline_profile": None,
         "quality_report": None,
         "drift_report": None,
+        "root_cause_report": None,
         "log": [],
     }
 
@@ -105,6 +125,7 @@ def main():
 
     print_quality_section(final_state["quality_report"])
     print_drift_section(final_state["drift_report"])
+    print_root_cause_section(final_state["root_cause_report"])
 
     if final_state["quality_report"].generated_summary:
         print(f"\nSummary & Recommendation:\n{final_state['quality_report'].generated_summary}")

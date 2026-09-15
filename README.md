@@ -1,107 +1,143 @@
 # AI Data Quality & Analytics Agent
 
-An autonomous, multi-agent system that profiles tabular data, detects quality
-issues and drift over time, scores the dataset, and writes a human-readable
-report — built with [LangGraph](https://github.com/langchain-ai/langgraph),
-[DuckDB](https://duckdb.org), and [Groq](https://console.groq.com) (free-tier
-LLM API, running Llama 3.3 70B).
+An autonomous, multi-agent system that profiles tabular data, detects
+quality issues and drift over time, **investigates why a volume anomaly
+happened**, scores the dataset, and writes a human-readable report — built
+with [LangGraph](https://github.com/langchain-ai/langgraph),
+[DuckDB](https://duckdb.org), [Groq](https://console.groq.com) (free-tier
+LLM API), and a [Streamlit](https://streamlit.io) UI.
 
-This covers **Phases 1–2** of a larger project. The remaining roadmap
-(root-cause investigation, human-approved automated fixes) is in
+This covers **Phases 1–3** of a larger project, plus a UI. The remaining
+roadmap (human-approved automated fixes, scheduling/alerting) is in
 [`ROADMAP.md`](./ROADMAP.md).
 
-## What it does right now
+## The headline feature: root-cause investigation
 
-Given a CSV, the agent pipeline:
-1. Profiles every column (nulls, types, cardinality, distributions)
-2. Detects duplicate records, invalid emails, missing values, and statistical outliers
-3. **Compares today's profile against the most recent historical snapshot** and
-   flags volume drops/spikes, schema changes, missing-rate shifts, and
-   distribution shifts
-4. Computes a 0–100 data quality score
-5. Uses a free LLM (Groq API, Llama 3.3 70B) to write a short executive
-   summary and recommendation — constrained to the already-computed facts,
-   so it can't invent numbers, and prioritized toward drift findings when
-   present since a sudden change is usually more urgent than a static issue
+Given two snapshots of the same data source over time, the agent doesn't
+just say "row count dropped 25%" — it identifies **which segment** caused
+it, deterministically, no LLM guessing involved:
 
 ```
-$ python -m src.main data/sample_customers_week2.csv --as-of 2026-08-12 --source-name customers_export.csv
-
-============================================================
-DATA QUALITY REPORT
-============================================================
-Source: customers_export.csv
-Rows analyzed: 10
-Overall Score: 46/100
-...
+$ python -m src.main data/sample_transactions_week2.csv --as-of 2026-07-31 --source-name transactions_export.csv
 
 ============================================================
 DRIFT REPORT
 ============================================================
-Comparing 2026-08-05  ->  2026-08-12
+Comparing 2026-07-24  ->  2026-07-31
 
-  ❌ Row count dropped 50.0% (20 -> 10).
-  ❌ Column 'region' was present before but is missing now.
-  ⚠️ New column 'loyalty_tier' appeared that wasn't present before.
-  ❌ Missing-value rate on 'phone' jumped from 15.0% to 60.0%.
-  ⚠️ Column 'age' changed type from float64 to int64.
+  ❌ Row count dropped 25.0% (40 -> 30).
+  ⚠️ Category 'North' in 'region' disappeared (was 25.0% of rows).
 
-Summary & Recommendation:
-[LLM-generated verdict, prioritizing the drift findings]
 ============================================================
+ROOT CAUSE INVESTIGATION
+============================================================
+Anomaly type: volume_drop
+Total row-count change: -10
+
+🎯 PRIMARY SUSPECT: 'North' in column 'region'
+   10 rows -> 0 rows (100% of the total change)
+
+Conclusion: 100% of the row-count change is attributable to 'North' in
+column 'region': it went from 10 rows to 0 rows. Its disappearance from
+the dataset largely explains the overall drop.
 ```
+
+Try it yourself with the seeded transactions dataset (see **Run it** below).
+
+## Try it: the UI
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Upload a CSV, pick a source name and date, and click **Run Analysis**. Run
+the same source name twice with two different dates (or two different
+files representing "the same feed over time") to see the Drift Agent catch
+real changes, and the Root Cause Agent explain them.
+
+The UI is a thin presentation layer only — it calls the exact same
+LangGraph pipeline as the CLI (`src/graph.py`). No agent logic lives in
+`streamlit_app.py`; if the pipeline changes, both the CLI and the UI pick
+it up automatically.
+
+## What it does
+
+Given a CSV, the agent pipeline (`Planner → Profiling → Drift → Root Cause
+→ Quality Analysis → Report`):
+1. Profiles every column: nulls, types, cardinality, numeric quantiles
+   (p10/p25/p50/p75/p90), and category frequencies for low-cardinality
+   columns
+2. Detects duplicate records, invalid emails, missing values, and
+   statistical outliers
+3. Compares today's profile against the most recent historical snapshot
+   and flags volume drops/spikes, schema changes, missing-rate shifts,
+   numeric mean/quantile shifts, and categorical distribution shifts
+   (new/disappeared/shifted categories)
+4. **If a volume anomaly was flagged**, investigates every tracked
+   categorical column to find which category's row count explains most
+   of the change, and reports a primary suspect when one exists
+5. Computes a 0–100 data quality score
+6. Uses a free LLM (Groq API) to write a short executive summary —
+   constrained to the already-computed facts, so it can't invent numbers
+   or causes; when a root cause was found, it's prioritized above
+   everything else in the summary
 
 ## Why this project is architecturally interesting
 
 Most "AI data quality" demos are a single prompt: "here's a CSV, tell me
 what's wrong with it." That's fragile — the LLM has to both *compute*
-statistics and *reason* about them in one shot, which means numbers get
-hallucinated. It's also stateless — it can't tell you "this changed since
-last week" because it has no memory of last week.
-
-This project separates concerns on purpose, and gives the system memory:
+statistics and *reason* about them in one shot, which means numbers (and
+causes) get hallucinated. This project separates concerns on purpose:
 
 | Layer | Implementation | Why |
 |---|---|---|
 | Profiling & quality checks | Plain Python (pandas, regex, IQR) | Deterministic, fast, cheap, and unit-testable |
-| Drift comparison | Plain Python, pure function (`compare_profiles`) | Same reason — comparing two known JSON structures needs no LLM |
-| Historical snapshots | DuckDB, one embedded file | Gives the system memory without standing up a database server |
+| Drift comparison | Plain Python, pure function (`compare_profiles`) | No LLM needed to diff two known JSON structures |
+| Root cause investigation | Plain Python, pure function (`investigate_volume_anomaly`) | Attributing a row-count change to a segment is arithmetic on stored `value_counts`, not reasoning — a sandboxed SQL-generating LLM agent would be riskier and slower for the same answer |
+| Historical snapshots | DuckDB, one embedded file | Gives the system memory without a database server |
 | Scoring | Plain Python, transparent weighting | Explainable — no black box |
-| Report writing | LLM (Groq/Llama 3.3), fed only the computed JSON | Reasoning/summarization is the one thing worth spending a model call on |
-| Orchestration | LangGraph state machine | Makes the pipeline explicit and lets later phases branch conditionally |
+| Report writing | LLM (Groq), fed only the computed JSON, fails gracefully | Reasoning/summarization is the one thing worth spending a model call on; it narrates the root cause, it doesn't discover it |
+| Orchestration | LangGraph state machine | Makes the pipeline explicit; Root Cause only runs when Drift found a volume anomaly, so wasted work is avoided |
+| Presentation | Streamlit, calling the same graph as the CLI | Zero duplicated logic between CLI and UI |
 
-The agents communicate through strict Pydantic schemas
-(`src/schemas.py`), not free text — see `Planner → Profiling → Drift →
-Quality Analysis → Report` in `src/graph.py`.
+The agents communicate through strict Pydantic schemas (`src/schemas.py`),
+not free text.
 
 ## Project structure
 
 ```
 ai-data-quality-agent/
+├── streamlit_app.py                    # UI, calls the same graph as the CLI
 ├── data/
-│   ├── sample_customers.csv       # "week 1" snapshot, seeded with known issues
-│   ├── sample_customers_week2.csv # "week 2" snapshot, seeded with known drift
-│   └── history.duckdb             # created automatically on first run
+│   ├── sample_customers.csv            # quality-issue demo dataset
+│   ├── sample_customers_week2.csv      # drift demo (schema/volume/missing-rate)
+│   ├── sample_transactions.csv         # root-cause demo, week 1
+│   ├── sample_transactions_week2.csv   # root-cause demo, week 2 (North vanishes)
+│   └── history.duckdb                  # created automatically on first run
 ├── src/
-│   ├── schemas.py                  # shared data contracts between agents
-│   ├── state.py                    # LangGraph shared state
-│   ├── graph.py                    # wires agents into a state graph
-│   ├── main.py                     # CLI entry point
+│   ├── schemas.py                      # shared data contracts between agents
+│   ├── state.py                        # LangGraph shared state
+│   ├── graph.py                        # wires agents into a state graph
+│   ├── main.py                         # CLI entry point
 │   ├── agents/
 │   │   ├── planner_agent.py
 │   │   ├── profiling_agent.py
-│   │   ├── drift_agent.py          # compares vs. history, saves new snapshot
+│   │   ├── drift_agent.py              # compares vs. history, saves new snapshot
+│   │   ├── root_cause_agent.py         # explains volume anomalies
 │   │   ├── quality_agent.py
-│   │   └── report_agent.py         # the only agent that calls an LLM
+│   │   └── report_agent.py             # the only agent that calls an LLM
 │   └── tools/
-│       ├── profiling.py            # deterministic profiling
-│       ├── quality_checks.py       # duplicate/email/missing/outlier checks
-│       ├── drift_checks.py         # pure profile-vs-profile comparison
-│       ├── snapshot_store.py       # DuckDB persistence for history
-│       └── scoring.py              # 0-100 scoring logic
+│       ├── profiling.py                # deterministic profiling + quantiles/value_counts
+│       ├── quality_checks.py           # duplicate/email/missing/outlier checks
+│       ├── drift_checks.py             # pure profile-vs-profile comparison
+│       ├── root_cause.py               # pure volume-anomaly attribution
+│       ├── snapshot_store.py           # DuckDB persistence for history
+│       └── scoring.py                  # 0-100 scoring logic
 └── tests/
-    ├── test_quality_checks.py      # "known-answer" tests against seeded issues
-    └── test_drift_checks.py        # "known-answer" tests against seeded drift
+    ├── test_quality_checks.py
+    ├── test_profiling.py
+    ├── test_drift_checks.py
+    └── test_root_cause.py
 ```
 
 ## Setup
@@ -111,29 +147,27 @@ git clone <your-repo-url>
 cd ai-data-quality-agent
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env .env   # then add your GROQ_API_KEY (free: console.groq.com/keys)
+cp .env.example .env   # then add your GROQ_API_KEY (free: console.groq.com/keys)
 ```
 
 ## Run it
 
-**First run** — no history yet, so the Drift Agent just saves a baseline:
+**UI:**
+```bash
+streamlit run streamlit_app.py
+```
+
+**CLI — root-cause demo** (the flagship scenario: a region's rows vanish):
+```bash
+python -m src.main data/sample_transactions.csv --as-of 2026-07-24 --source-name transactions_export.csv
+python -m src.main data/sample_transactions_week2.csv --as-of 2026-07-31 --source-name transactions_export.csv
+```
+
+**CLI — general quality + drift demo:**
 ```bash
 python -m src.main data/sample_customers.csv --as-of 2026-08-05 --source-name customers_export.csv
-```
-
-**Second run** — same logical source, a week later, with real changes seeded in:
-```bash
 python -m src.main data/sample_customers_week2.csv --as-of 2026-08-12 --source-name customers_export.csv
 ```
-
-`--source-name` is what lets two different files be treated as the same
-recurring data feed over time (a daily/weekly export would naturally have
-a new filename each time). `--as-of` lets you simulate dates for a demo
-instead of waiting for real days to pass — omit it to default to today.
-
-Re-running the plain `python -m src.main data/sample_customers.csv` from
-Phase 1 still works exactly as before; it'll just also get a drift check
-against whatever history exists for that filename.
 
 ## Run the tests
 
@@ -141,18 +175,16 @@ against whatever history exists for that filename.
 pytest tests/ -v
 ```
 
-`sample_customers.csv` and `sample_customers_week2.csv` were seeded with
-**known** differences — a 50% row-count drop, a `region`→`loyalty_tier`
-schema change, and a phone missing-rate jump from 15% to 60% — so the
-tests verify the drift logic actually catches what it's supposed to,
-rather than just "runs without crashing."
+All sample datasets were seeded with **known** issues, drift, and root
+causes (a region whose transactions completely stop, a 50% row-count drop,
+a schema change, missing-rate spikes) so the tests verify the logic
+actually catches and explains what it's supposed to.
 
 ## Roadmap
 
-See [`ROADMAP.md`](./ROADMAP.md) for Phases 3–5: a natural-language
-root-cause investigation agent (e.g. "why did revenue drop 18%?"), and
-a human-approved auto-remediation layer.
+See [`ROADMAP.md`](./ROADMAP.md) for what's left: human-approved automated
+fixes, and productionizing (scheduling, alerting, auth).
 
 ## Tech stack
 
-Python · pandas · Pydantic · LangGraph · DuckDB · Groq API (Llama 3.3) · pytest
+Python · pandas · Pydantic · LangGraph · DuckDB · Groq API · Streamlit · pytest
