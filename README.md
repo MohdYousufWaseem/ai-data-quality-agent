@@ -7,8 +7,8 @@ with [LangGraph](https://github.com/langchain-ai/langgraph),
 [DuckDB](https://duckdb.org), [Groq](https://console.groq.com) (free-tier
 LLM API), and a [Streamlit](https://streamlit.io) UI.
 
-This covers **Phases 1–3** of a larger project, plus a UI. The remaining
-roadmap (human-approved automated fixes, scheduling/alerting) is in
+This covers **Phases 1–4** of a larger project, plus a UI. The remaining
+roadmap (scheduling/alerting, productionizing) is in
 [`ROADMAP.md`](./ROADMAP.md).
 
 ## The headline feature: root-cause investigation
@@ -44,6 +44,45 @@ the dataset largely explains the overall drop.
 
 Try it yourself with the seeded transactions dataset (see **Run it** below).
 
+## Human-approved fixes
+
+Detecting issues is only half the job — Phase 4 adds proposing and (with
+approval) applying fixes, without ever touching your original file:
+
+```bash
+python -m src.main data/sample_customers.csv --apply-fixes
+```
+```
+RECOMMENDED FIXES
+============================================================
+  [AUTO-FIXABLE] (action_0) Remove 2 duplicate row(s), keeping the first occurrence of each.
+  [MANUAL REVIEW] (action_1) 2 rows have an email that doesn't match a valid email pattern.
+  [AUTO-FIXABLE] (action_2) Fill 3 missing value(s) in 'phone' (median/most common value).
+  [AUTO-FIXABLE] (action_3) Fill 1 missing value(s) in 'age' (median/most common value).
+  [MANUAL REVIEW] (action_4) Column 'age' has 2 outlier(s) outside the expected range.
+
+APPROVE FIXES
+============================================================
+Apply fix: Remove 2 duplicate row(s)...   Apply? [y/N]: y
+Apply fix: Fill 3 missing value(s) in 'phone'...   Apply? [y/N]: y
+Apply fix: Fill 1 missing value(s) in 'age'...   Apply? [y/N]: y
+
+VALIDATION RESULT
+============================================================
+Rows: 20 -> 18
+Score: 51/100 -> 86/100
+Remaining issues: 5 -> 2
+
+Cleaned data written to: cleaned_output.csv
+(The original input file was not modified.)
+```
+
+Only duplicates and missing values get an automated fix proposed —
+invalid formats and outliers are always left for manual review, since
+correcting them requires judgment a script shouldn't assume. In the UI,
+the same flow is a checklist with an "Apply Selected Fixes" button and a
+download link for the cleaned CSV.
+
 ## Try it: the UI
 
 ```bash
@@ -53,17 +92,19 @@ streamlit run streamlit_app.py
 Upload a CSV, pick a source name and date, and click **Run Analysis**. Run
 the same source name twice with two different dates (or two different
 files representing "the same feed over time") to see the Drift Agent catch
-real changes, and the Root Cause Agent explain them.
+real changes, and the Root Cause Agent explain them. Then review the
+Recommended Fixes section and approve what you want applied.
 
 The UI is a thin presentation layer only — it calls the exact same
-LangGraph pipeline as the CLI (`src/graph.py`). No agent logic lives in
-`streamlit_app.py`; if the pipeline changes, both the CLI and the UI pick
-it up automatically.
+LangGraph pipeline as the CLI (`src/graph.py`), plus the same
+`tools/actions.py` / `tools/validation.py` for the human-approval step.
+No agent logic lives in `streamlit_app.py`; if the pipeline changes, both
+the CLI and the UI pick it up automatically.
 
 ## What it does
 
 Given a CSV, the agent pipeline (`Planner → Profiling → Drift → Root Cause
-→ Quality Analysis → Report`):
+→ Quality Analysis → Recommendation → Report`):
 1. Profiles every column: nulls, types, cardinality, numeric quantiles
    (p10/p25/p50/p75/p90), and category frequencies for low-cardinality
    columns
@@ -77,10 +118,19 @@ Given a CSV, the agent pipeline (`Planner → Profiling → Drift → Root Cause
    categorical column to find which category's row count explains most
    of the change, and reports a primary suspect when one exists
 5. Computes a 0–100 data quality score
-6. Uses a free LLM (Groq API) to write a short executive summary —
+6. Proposes fixes for the safe, unambiguous issues (duplicates, missing
+   values) and marks everything else (invalid formats, outliers) for
+   manual review only — proposing never executes anything
+7. Uses a free LLM (Groq API) to write a short executive summary —
    constrained to the already-computed facts, so it can't invent numbers
    or causes; when a root cause was found, it's prioritized above
    everything else in the summary
+
+**Separately**, once you review the proposals: approve some or all of the
+auto-fixable actions (in the UI or via `--apply-fixes` in the CLI), and
+the Action Agent applies them to a *copy* of the data — the original file
+is never touched — then the Validation Agent re-checks the result and
+shows you a real before/after comparison.
 
 ## Why this project is architecturally interesting
 
@@ -94,11 +144,14 @@ causes) get hallucinated. This project separates concerns on purpose:
 | Profiling & quality checks | Plain Python (pandas, regex, IQR) | Deterministic, fast, cheap, and unit-testable |
 | Drift comparison | Plain Python, pure function (`compare_profiles`) | No LLM needed to diff two known JSON structures |
 | Root cause investigation | Plain Python, pure function (`investigate_volume_anomaly`) | Attributing a row-count change to a segment is arithmetic on stored `value_counts`, not reasoning — a sandboxed SQL-generating LLM agent would be riskier and slower for the same answer |
+| Recommending fixes | Plain Python, maps issue type → proposal | Only safe, unambiguous fixes (dedup, impute) are proposed; the rest is flagged for a human, not guessed at |
+| Applying fixes | Plain Python, operates on a DataFrame copy | Proposing is automatic; *executing* requires an explicit human click/approval, and never mutates the original file |
+| Validating fixes | Plain Python, re-runs the same checks | "Did the score actually improve" is a fact to compute, not something an LLM needs to assert |
 | Historical snapshots | DuckDB, one embedded file | Gives the system memory without a database server |
 | Scoring | Plain Python, transparent weighting | Explainable — no black box |
 | Report writing | LLM (Groq), fed only the computed JSON, fails gracefully | Reasoning/summarization is the one thing worth spending a model call on; it narrates the root cause, it doesn't discover it |
-| Orchestration | LangGraph state machine | Makes the pipeline explicit; Root Cause only runs when Drift found a volume anomaly, so wasted work is avoided |
-| Presentation | Streamlit, calling the same graph as the CLI | Zero duplicated logic between CLI and UI |
+| Orchestration | LangGraph state machine | Makes the automatic pipeline explicit; applying fixes is deliberately kept *outside* this graph since it needs a human in the loop |
+| Presentation | Streamlit, calling the same graph + action tools as the CLI | Zero duplicated logic between CLI and UI |
 
 The agents communicate through strict Pydantic schemas (`src/schemas.py`),
 not free text.
@@ -125,19 +178,26 @@ ai-data-quality-agent/
 │   │   ├── drift_agent.py              # compares vs. history, saves new snapshot
 │   │   ├── root_cause_agent.py         # explains volume anomalies
 │   │   ├── quality_agent.py
+│   │   ├── recommendation_agent.py     # proposes fixes (never executes)
 │   │   └── report_agent.py             # the only agent that calls an LLM
 │   └── tools/
 │       ├── profiling.py                # deterministic profiling + quantiles/value_counts
 │       ├── quality_checks.py           # duplicate/email/missing/outlier checks
 │       ├── drift_checks.py             # pure profile-vs-profile comparison
 │       ├── root_cause.py               # pure volume-anomaly attribution
+│       ├── recommendations.py          # issue -> proposed fix mapping
+│       ├── actions.py                  # applies approved fixes (human-triggered)
+│       ├── validation.py               # before/after comparison after fixes
 │       ├── snapshot_store.py           # DuckDB persistence for history
 │       └── scoring.py                  # 0-100 scoring logic
 └── tests/
     ├── test_quality_checks.py
     ├── test_profiling.py
     ├── test_drift_checks.py
-    └── test_root_cause.py
+    ├── test_root_cause.py
+    ├── test_recommendations.py
+    ├── test_actions.py
+    └── test_validation.py
 ```
 
 ## Setup

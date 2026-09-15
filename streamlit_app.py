@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.graph import build_graph
+from src.tools.actions import apply_fixes
+from src.tools.validation import validate_fixes
 
 st.set_page_config(
     page_title="AI Data Quality & Analytics Agent",
@@ -219,6 +221,69 @@ def render_trace(log: list[str]):
             st.text(line)
 
 
+def render_recommendations_section(recommendation_report, original_df: pd.DataFrame):
+    st.subheader("\U0001F6E0\uFE0F Recommended Fixes")
+
+    if not recommendation_report.actions:
+        st.success("No issues to fix.")
+        return
+
+    auto_fixable = [a for a in recommendation_report.actions if a.auto_fixable]
+    manual_only = [a for a in recommendation_report.actions if not a.auto_fixable]
+
+    approved_ids = []
+    if auto_fixable:
+        st.caption("Select which fixes to apply. Nothing runs until you click "
+                   "**Apply Selected Fixes** below -- this never modifies your "
+                   "original uploaded file.")
+        for action in auto_fixable:
+            checked = st.checkbox(action.description, value=True, key=f"chk_{action.action_id}")
+            if checked:
+                approved_ids.append(action.action_id)
+
+        if st.button("\u2705 Apply Selected Fixes", type="primary"):
+            approved_actions = [a for a in auto_fixable if a.action_id in approved_ids]
+            if not approved_actions:
+                st.warning("No fixes selected.")
+            else:
+                fixed_df, applied = apply_fixes(original_df, approved_actions)
+                validation = validate_fixes(original_df, fixed_df, applied)
+                st.session_state["fixed_df"] = fixed_df
+                st.session_state["validation"] = validation
+    else:
+        st.info("No auto-fixable issues found -- see manual review items below, if any.")
+
+    if manual_only:
+        with st.expander(f"Manual review needed ({len(manual_only)})"):
+            for action in manual_only:
+                st.markdown(f"- {action.description}")
+
+    validation = st.session_state.get("validation")
+    if validation:
+        st.markdown("#### Validation Result")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Score", f"{validation.score_after}/100",
+                    delta=validation.score_after - validation.score_before)
+        col2.metric("Rows", validation.row_count_after,
+                    delta=validation.row_count_after - validation.row_count_before)
+        col3.metric("Remaining Issues", validation.issue_count_after,
+                    delta=validation.issue_count_after - validation.issue_count_before,
+                    delta_color="inverse")
+
+        for fix in validation.fixes_applied:
+            st.markdown(f"\u2705 {fix.description}")
+
+        fixed_df = st.session_state.get("fixed_df")
+        if fixed_df is not None:
+            csv_bytes = fixed_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "\u2b07\ufe0f Download cleaned CSV", data=csv_bytes,
+                file_name="cleaned_output.csv", mime="text/csv",
+            )
+            st.caption("Your original uploaded file was never modified -- "
+                       "this is a new file.")
+
+
 def main():
     st.title("\U0001F9EA AI Data Quality & Analytics Agent")
     st.caption(
@@ -264,6 +329,7 @@ def main():
             "quality_report": None,
             "drift_report": None,
             "root_cause_report": None,
+            "recommendation_report": None,
             "log": [],
         }
 
@@ -271,6 +337,10 @@ def main():
             final_state = app.invoke(initial_state)
 
         st.session_state["result"] = final_state
+        st.session_state["original_df"] = df
+        # Clear any stale validation/fixed data from a previous run.
+        st.session_state.pop("validation", None)
+        st.session_state.pop("fixed_df", None)
 
     result = st.session_state.get("result")
     if result is None:
@@ -288,6 +358,8 @@ def main():
     render_root_cause_section(result["root_cause_report"])
     if result["root_cause_report"].triggered:
         st.divider()
+    render_recommendations_section(result["recommendation_report"], st.session_state["original_df"])
+    st.divider()
     render_summary(result["quality_report"])
     render_trace(result["log"])
 

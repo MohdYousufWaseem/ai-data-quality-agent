@@ -40,13 +40,24 @@ are excluded from `value_counts` — a follow-up could add an "ID-like
 column" heuristic (e.g. column name ends in `_id`, or `unique_count`
 nearly equals `row_count`) to skip quantile checks on surrogate keys.
 
-**Phase 4 — Recommendations + Human-Approved Actions**
-A `RecommendationAgent` turns findings into structured, prioritized
-suggestions. An `ActionAgent` can execute approved fixes (dedup,
-standardize formats, impute values) — always through a staging table,
-never direct writes to source data, and only after explicit human
-approval. A `ValidationAgent` re-profiles afterward to confirm the fix
-worked.
+**Phase 4 — Recommendations + Human-Approved Actions (done)**
+A `RecommendationAgent` (a normal, automatic graph node) turns each
+`QualityIssue` into a structured `FixAction` proposal — but only proposes,
+never executes. Only `duplicate_records` (drop duplicates, keep first) and
+`missing_values` (median for numeric columns, mode for text columns) get
+`auto_fixable=True`; invalid formats and statistical outliers are marked
+`manual_review_only` since correcting them requires business judgment a
+script shouldn't assume.
+
+Applying a fix is a *separate*, human-triggered step outside the automatic
+graph (`tools/actions.py` + `tools/validation.py`), invoked from the UI
+(checkboxes + "Apply Selected Fixes" button) or the CLI (`--apply-fixes`,
+which interactively asks approval for each action). Every fix operates on
+a copy of the DataFrame — the original uploaded file or CSV is never
+mutated; the cleaned result is written to a new file, and the UI offers it
+as a download. A `ValidationReport` re-runs the same deterministic checks
+before/after to show whether the score actually improved, rather than
+just asserting it.
 
 **Phase 5 — Productionize**
 Scheduling (cron/Airflow) for recurring checks, Slack/email alerting

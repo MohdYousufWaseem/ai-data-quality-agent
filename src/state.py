@@ -1,6 +1,8 @@
 from typing import TypedDict, Any
 import pandas as pd
-from src.schemas import DataProfile, QualityReport, DriftReport, RootCauseReport
+from src.schemas import (
+    DataProfile, QualityReport, DriftReport, RootCauseReport, RecommendationReport,
+)
 
 
 class GraphState(TypedDict):
@@ -12,4 +14,5 @@ class GraphState(TypedDict):
     quality_report: QualityReport | None
     drift_report: DriftReport | None
     root_cause_report: RootCauseReport | None
+    recommendation_report: RecommendationReport | None
     log: list[str]

@@ -92,3 +92,50 @@ class RootCauseReport(BaseModel):
     other_candidates: list[RootCauseCandidate] = Field(default_factory=list)
     conclusion: str = ""                          # deterministic, plain-English fact
     reason_not_triggered: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# 5. Output of the Recommendation Agent (proposed fixes -- not yet applied)
+# ---------------------------------------------------------------------------
+
+ActionType = Literal["deduplicate", "impute_missing", "manual_review_only"]
+
+
+class FixAction(BaseModel):
+    # A stable id so the UI/CLI can reference "apply this specific action"
+    # without re-matching on free text.
+    action_id: str
+    issue_type: str
+    action_type: ActionType
+    column: Optional[str] = None
+    description: str
+    affected_row_count: int
+    auto_fixable: bool
+
+
+class RecommendationReport(BaseModel):
+    source_name: str
+    actions: list[FixAction]
+
+
+# ---------------------------------------------------------------------------
+# 6. Output of applying fixes (Action Agent) and re-validating (Validation Agent)
+# ---------------------------------------------------------------------------
+
+class AppliedFix(BaseModel):
+    action_id: str
+    action_type: str
+    column: Optional[str] = None
+    rows_affected: int
+    description: str
+
+
+class ValidationReport(BaseModel):
+    fixes_applied: list[AppliedFix]
+    row_count_before: int
+    row_count_after: int
+    score_before: int
+    score_after: int
+    issue_count_before: int
+    issue_count_after: int
+    summary: str  # deterministic, plain-English comparison
